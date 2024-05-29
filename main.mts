@@ -19,20 +19,31 @@ async function main() {
    await page.locator(`#login-button`).click()
 
    const topFrame = page.frameLocator(`#top_frame`)
-   await topFrame.locator(`#bookmarkMenuItems *[data-id="QuickSearch"]`).click()
+   await topFrame.locator(`#bookmarkMenuItems *[data-id="SavedSearches"]`).click()
+
    const viewFrame = topFrame.frameLocator(`#view_frame`)
 
-   await viewFrame.locator(`#enabled_6`)
-   .selectOption(['Abejales', 'Achaguas'])
-   // .locator(`#inputform`).focus()
-   //  .locator(`#enabled_6`).innerHTML()
-   // .click()
+   await viewFrame.getByText(`Zonas Anais`).click()
 
+   // when the last tr is scraped, need to scroll
+      // elem.scroll(0, 300_000)  300_000 just a bigger number to make sure it scrolls all the way down.
+      // 100 new tr should be put in place of the old ones.
+      // so need to go back to the first tr and start scraping.
 
-   // // ciudad
-   // await page.locator(`#enabled_6`).click()
-   // // urbanizacion
-   // await page.locator(`#enabled_7`).click()
+   // table to scroll: `#gridC` inside view_frame
+   // first tr selector:
+      // `#thegridbody:first-child` first child of this
+      // or #thegridbody:nth-child(1)
+
+   // scroll element #gridC
+//    await page.evaluate(() => {
+//       window.scrollTo(0, document.body.scrollHeight);
+//   });
+
+// scrape only inmuebles details y codigos de cada photo thumbnail
+   // (no need to click to see bigger one)
+   // I can map thumbnail photo id to query big photo directly from cdn
+
 
 console.log("sleepin'")
    await sleep(5_000)
