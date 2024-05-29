@@ -18,17 +18,15 @@ async function main() {
    await page.locator(`#password`).fill(`Manuelm87`)
    await page.locator(`#login-button`).click()
 
-
    const topFrame = page.frameLocator(`#top_frame`)
    await topFrame.locator(`#bookmarkMenuItems *[data-id="QuickSearch"]`).click()
    const viewFrame = topFrame.frameLocator(`#view_frame`)
+
    await viewFrame.locator(`#enabled_6`)
-   .selectOption(['Abejales', 'Achaguas']);
+   .selectOption(['Abejales', 'Achaguas'])
    // .locator(`#inputform`).focus()
    //  .locator(`#enabled_6`).innerHTML()
    // .click()
-// console.log({x})
-
 
 
    // // ciudad
