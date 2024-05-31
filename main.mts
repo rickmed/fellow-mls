@@ -1,5 +1,5 @@
 import { chromium, type BrowserContext, type Browser, FrameLocator, Locator } from "playwright"
-import ts from "typescript"
+import {sleep} from "./utils.mjs"
 
 const timeout = 10_000
 let browser!: Browser
@@ -34,59 +34,71 @@ async function main() {
    await page.locator(`#password`).fill(`Manuelm87`)
    await page.locator(`#login-button`).click()
 
-   const topFrame = page.frameLocator(`#top_frame`)
-   const viewFrame = topFrame.frameLocator(`#view_frame`)
+   const topIFrame = page.frameLocator(`#top_frame`)
+   const viewIFrame = topIFrame.frameLocator(`#view_frame`)
 
    /* Open listings of Zonas Anais saved search */
-   await topFrame.locator(`#bookmarkMenuItems *[data-id="SavedSearches"]`).click()
-   await viewFrame.getByText("Zona Anais").click()
+   await topIFrame.locator(`#bookmarkMenuItems *[data-id="SavedSearches"]`).click()
+   await viewIFrame.getByText("Zona Anais").click()
 
-   await viewFrame.locator(`#thegridbody`).waitFor()
+   // Wait list to load
+   await viewIFrame.locator(`#thegridbody`).waitFor()
 
-   const detailsButton = viewFrame.locator(`#tab_detail`)
-   const detailsFrame = viewFrame.frameLocator(`#iframe_detail`)   // idem Photos
-   const photosButton = viewFrame.locator(`#tab_tour`)
-   const photosFrame = viewFrame.frameLocator(`#iframe_tour`)   // idem Photos
+   /* Locators used in program */
+   const detailButton = viewIFrame.locator(`#tab_detail`)
+   const detailIFrame = viewIFrame.frameLocator(`#iframe_detail`)
+   const photosButton = viewIFrame.locator(`#tab_tour`)
+   const photosIFrame = viewIFrame.frameLocator(`#iframe_tour`)
 
    /* Sort estates MLS# descending (from newest inserted to oldest) */
-   /*    await viewFrame.locator(`#thegridbody`).waitFor()
-      await viewFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
-      await viewFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click() */
+   /*    await viewIFrame.locator(`#thegridbody`).waitFor()
+      await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
+      await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click() */
 
-   // const estateData = await scrapeEstate(0, leftList, detailsButton, detailsFrame, photosButton, photosFrame)
+   // from db or:
+   let row_id = await viewIFrame.locator(`#thegridbody > tr`).nth(0).getAttribute("id")
+   if (!row_id) {
+      throw Error("FellowMLS. row_id not found at init")
+   }
 
-   // let estatesToScrape = true
-   // while (estatesToScrape) {
+   let scraped = 0
+
+   // click correct item of list
+   await viewIFrame.locator(`#${row_id}`).click()
+   await detailButton.click()
+   // await sleep(2_000)
+
+   const things = await scrapeDescripcionSection(detailIFrame)
+   console.log({things})
+
+
+   // // eslint-disable-next-line no-constant-condition
+   // while (true) {
+   //    console.log("SCRAPING:", row_id)
+   //    const estateData = await scrapeEstate(row_id, viewIFrame, detailsButton, detailsIFrame, photosButton, photosIFrame)
+
+   //    const toDB = {...estateData, row_id}
+   //    console.log(toDB)
+   //    // save estateData to db, here
+
+   //    const isTrLast = await isTrLastofList(row_id, viewIFrame)
+   //    if (isTrLast) {
+   //       const allEstatesScraped = await scrollListDownAndWaitNewLoadedEstates(viewIFrame)
+   //       if (allEstatesScraped) {
+   //          break
+   //       }
+   //    }
+
+   //    const newRowID = await getNextSiblingRowID(row_id, viewIFrame)
+   //    if (!newRowID) {
+   //       throw Error("FellowMLS. newRowId not found.")
+   //    }
+   //    row_id = newRowID
+
+   //    scraped++
+   //    console.log({scraped})
    // }
 
-   const rowIDs1 = await viewFrame.locator(`#thegridbody`).evaluate((el:HTMLElement) => {
-      const trS = el.children
-      let idS = []
-      for (const tr of trS) {
-         idS.push(tr.getAttribute("id"))
-      }
-      return idS
-   })
-   console.log({ rowIDs1 })
-
-   const res = await scrollListDownAndWaitNewLoadedEstates(viewFrame)
-
-   console.log({res})
-
-   const rowIDs2 = await viewFrame.locator(`#thegridbody`).evaluate((el:HTMLElement) => {
-      const trS = el.children
-      let idS = []
-      for (const tr of trS) {
-         idS.push(tr.getAttribute("id"))
-      }
-      return idS
-   })
-   console.log({ rowIDs2 })
-
-
-   // const sleepTime = 3_000
-   // console.log("sleepin'", sleepTime)
-   // await sleep(sleepTime)
    await cleanResources()
 }
 
@@ -94,28 +106,34 @@ try {
    await main()
 }
 catch (e) {
-   console.log("FellowMLS: something went wrong.")
-   console.log(e)
+   console.log("FellowMLS: something threw.")
+   if (e instanceof Error) {
+      console.log("An Error was thrown.")
+      console.log("ERROR MSG:", e.message)
+      console.log("ERROR:", e)
+   }
    await cleanResources()
 }
 
 
 async function cleanResources() {
    console.log("Program Done")
-   if (browserCtx) { await browserCtx.close() }
-   if (browser) { await browser.close() }
+   if (browserCtx) {
+      await browserCtx.close()
+   }
+   if (browser) {
+      await browser.close()
+   }
 }
 
-function sleep(ms: number) {
-   return new Promise(res => {
-      setTimeout(res, ms)
-   })
+function getNextSiblingRowID(row_id: string, viewIFrame: FrameLocator) {
+   return viewIFrame.locator(`#${row_id} + tr`).getAttribute("id")
 }
 
-async function scrapeEstate(currTrIdx: number, viewFrame: FrameLocator, detailsButton: Locator, detailIframe: FrameLocator, photosButton: Locator, photosIframe: FrameLocator) {
+async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsButton: Locator, detailIframe: FrameLocator, photosButton: Locator, photosIframe: FrameLocator) {
 
-   // click n item of leftList
-   await viewFrame.locator(`#thegridbody > tr`).nth(currTrIdx).click()
+   // click correct item of list
+   await viewIFrame.locator(`#${row_id}`).click()
    await detailsButton.click()
 
    /* Srape Detail Data */
@@ -130,6 +148,9 @@ async function scrapeEstate(currTrIdx: number, viewFrame: FrameLocator, detailsB
    await photosButton.click()
    const photosData = await scrapePhotosData(photosIframe)
 
+   // so when next list tr is clicked, details page reloads all info inmediately.
+   await detailsButton.click()
+
    return {
       ubicacionData,
       direccionData,
@@ -141,9 +162,9 @@ async function scrapeEstate(currTrIdx: number, viewFrame: FrameLocator, detailsB
    }
 }
 
-async function scrapeUbicacionSection(iframeDetail: FrameLocator) {
+async function scrapeUbicacionSection(detailIframe: FrameLocator) {
 
-   const ubicacionTable = iframeDetail.locator(".style20080305202843445493000000").first()
+   const ubicacionTable = detailIframe.locator(".style20080305202843445493000000").first()
 
    const ubicacionScraped = await ubicacionTable.evaluate((elem) => {
 
@@ -179,9 +200,9 @@ async function scrapeUbicacionSection(iframeDetail: FrameLocator) {
    return { flexCode, ubicacionData }
 }
 
-async function scrapeDireccionSection(iframeDetail: FrameLocator) {
+async function scrapeDireccionSection(detailIframe: FrameLocator) {
 
-   const direccionScraped = await iframeDetail.getByText("Nombre de Inmueble").evaluate(el => {
+   const direccionScraped = await detailIframe.getByText("Nombre de Inmueble").evaluate(el => {
 
       const trS = el.parentElement?.children
 
@@ -207,41 +228,31 @@ async function scrapeDireccionSection(iframeDetail: FrameLocator) {
    return direccionScraped
 }
 
-async function scrapeDescripcionSection(iframeDetail: FrameLocator) {
+async function scrapeDescripcionSection(detailIframe: FrameLocator) {
 
-   const descripcionData: Array<[string, string]> = []
+   const descripcionData = await detailIframe.locator(`table.style20080305202843849962000000`).evaluate(el => {
 
-   const sectionNames = ["Descripcion: ", "Observaciones: ", "Como Llegar: "]
-   for (const secName of sectionNames) {
-      try {
-         await iframeDetail.getByText(secName).first().waitFor()
+      const data: Array<[string, string]> = []
+
+      const kElemS = el.querySelectorAll(`span.datalabelfont.style20080305202844068284000000`)
+
+      for (const kElem of kElemS) {
+         const k = kElem.textContent
+         const val = kElem.nextSibling?.textContent
+         if (!k) continue
+         if (!val) continue
+         data.push([k, val])
       }
-      catch (e) {
-         if (e instanceof Error && e.name === "TimeoutError") {
-            // eslint-disable-next-line no-console
-            console.log(`${secName} not available. Moving on`)
-            continue
-         }
-      }
-      let [key, val] = await iframeDetail.getByText(secName).first().evaluate((el: HTMLElement) => {
 
-         const key = el.innerText
-         const nextSibling = el.nextSibling as HTMLElement
-         const val = nextSibling.innerText
-
-         return [key, val]
-      })
-
-      key = key.replace(":", "").replaceAll(" ", "")
-      descripcionData.push([key, val])
-   }
+      return data
+   })
 
    return descripcionData
 }
 
-async function scrapeInfoGenSection(iframeDetail: FrameLocator) {
+async function scrapeInfoGenSection(detailIframe: FrameLocator) {
 
-   const infoGenScraped = await iframeDetail.getByText("Informacion General").evaluate(el => {
+   const infoGenScraped = await detailIframe.getByText("Informacion General").evaluate(el => {
 
       const tbody = el.nextSibling?.childNodes[0]
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
@@ -273,9 +284,9 @@ async function scrapeInfoGenSection(iframeDetail: FrameLocator) {
    return infoGenScraped
 }
 
-async function scrapeDetallesSection(iframeDetail: FrameLocator) {
+async function scrapeDetallesSection(detailIframe: FrameLocator) {
 
-   const detallesScraped = await iframeDetail.getByText("Detalles Inmueble:").evaluate(el => {
+   const detallesScraped = await detailIframe.getByText("Detalles Inmueble:").evaluate(el => {
 
       const tbody = el.parentElement?.parentElement
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
@@ -314,9 +325,9 @@ async function scrapeDetallesSection(iframeDetail: FrameLocator) {
    })
 }
 
-async function scrapeInfoInternaGenSection(iframeDetail: FrameLocator) {
+async function scrapeInfoInternaGenSection(detailIframe: FrameLocator) {
 
-   const infoGenScraped = await iframeDetail.getByText("Informacion Interna").evaluate(el => {
+   const infoGenScraped = await detailIframe.getByText("Informacion Interna").evaluate(el => {
 
       const tbody = el.nextSibling?.childNodes[0]
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
@@ -348,9 +359,9 @@ async function scrapeInfoInternaGenSection(iframeDetail: FrameLocator) {
    return infoGenScraped
 }
 
-async function scrapePhotosData(photosFrameLocator: FrameLocator) {
+async function scrapePhotosData(photosIframe: FrameLocator) {
 
-   const photosIDs = await photosFrameLocator
+   const photosIDs = await photosIframe
       .locator(".rsThumbsContainer")
       .evaluate(el => {
          let photosIDs: string[] = []
@@ -375,22 +386,23 @@ async function scrapePhotosData(photosFrameLocator: FrameLocator) {
    return photosIDs
 }
 
-async function scrollListDownAndWaitNewLoadedEstates(viewFrame: FrameLocator) {
+/* returns true is spinner didn't appear, ie, all estates we scraped */
+async function scrollListDownAndWaitNewLoadedEstates(viewIFrame: FrameLocator) {
 
-   await viewFrame.locator(`#gridC`).evaluate(letfListElem => {
+   await viewIFrame.locator(`#gridC`).evaluate(letfListElem => {
       letfListElem.scroll(0, 300_00)
    })
 
    try {
-      await viewFrame.locator(`#morelistingsbot`).waitFor({timeout: 500})
+      await viewIFrame.locator(`#morelistingsbot`).waitFor({ timeout: 500 })
    }
    catch (e) {
       if (e instanceof Error && e.name === "TimeoutError") {
-         return "end"
+         return true
       }
    }
 
-   await viewFrame.locator(`#gridC`).evaluate(async letfListElem => {
+   await viewIFrame.locator(`#gridC`).evaluate(async letfListElem => {
 
       let resolve: (value: unknown) => void
       const promise = new Promise(res => {
@@ -399,18 +411,21 @@ async function scrollListDownAndWaitNewLoadedEstates(viewFrame: FrameLocator) {
 
       letfListElem.addEventListener("scroll", () => {
          resolve(undefined)
-      }, {once: true})
+      }, { once: true })
 
       await promise
    })
+
+   return false
 }
 
-async function isItemLastInLeftList(currTrIdx: number, viewFrame: FrameLocator) {
-   return viewFrame.locator(`#thegridbody`).evaluate((el, idx) => {
-      const trSItems = el.children
-      if ((trSItems.length - 1) == idx) {
-         return true
-      }
-      return false
-   }, currTrIdx)
+async function isTrLastofList(row_id: string, viewIFrame: FrameLocator) {
+   return viewIFrame.locator(`#thegridbody`).evaluate((el, row_id) => {
+
+      const targetTr = el.querySelector(`#${row_id}`)!
+      const childrenArr = [...el.children]
+      const index = childrenArr.indexOf(targetTr)
+      return (childrenArr.length - 1) === index ? true : false
+
+   }, row_id)
 }
