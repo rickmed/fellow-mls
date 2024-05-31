@@ -1,4 +1,5 @@
-import { chromium, type BrowserContext, type Browser, FrameLocator } from "playwright"
+import { chromium, type BrowserContext, type Browser, FrameLocator, Locator } from "playwright"
+import ts from "typescript"
 
 const timeout = 10_000
 let browser!: Browser
@@ -18,8 +19,12 @@ async function main() {
    const page = await browserCtx.newPage()
    page.setDefaultTimeout(timeout)
 
-   // eslint-disable-next-line no-console
-   page.on("console", msg => console.log(msg.text()))
+   page.on("console", msg => {
+      const msg_ = msg.text()
+      if (msg_.includes("FMLS")) {
+         console.log(msg_)
+      }
+   })
 
    await page.goto(`https://ven.flexmls.com/`)
 
@@ -34,77 +39,68 @@ async function main() {
 
    /* Open listings of Zonas Anais saved search */
    await topFrame.locator(`#bookmarkMenuItems *[data-id="SavedSearches"]`).click()
-   await viewFrame.getByText(`Zonas Anais`).click()
+   await viewFrame.getByText("Zona Anais").click()
+
+   await viewFrame.locator(`#thegridbody`).waitFor()
+
+   const detailsButton = viewFrame.locator(`#tab_detail`)
+   const detailsFrame = viewFrame.frameLocator(`#iframe_detail`)   // idem Photos
+   const photosButton = viewFrame.locator(`#tab_tour`)
+   const photosFrame = viewFrame.frameLocator(`#iframe_tour`)   // idem Photos
 
    /* Sort estates MLS# descending (from newest inserted to oldest) */
    /*    await viewFrame.locator(`#thegridbody`).waitFor()
       await viewFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
       await viewFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click() */
 
-   /* Srape Detail Data */
-   await viewFrame.locator(`#thegridbody`).waitFor()
-   await viewFrame.locator(`#tab_detail`).click()
-   const iframeDetail = viewFrame.frameLocator(`#iframe_detail`)   // idem Photos
+   // const estateData = await scrapeEstate(0, leftList, detailsButton, detailsFrame, photosButton, photosFrame)
 
-   let estateData: EstateData = new Map()
+   // let estatesToScrape = true
+   // while (estatesToScrape) {
+   // }
 
-   // const ubicacionData = await scrapeUbicacionSection(iframeDetail)
-   // const direccionData = await scrapeDireccionSection(iframeDetail)
-   // const descripcionData = await scrapeDescripcionSection(iframeDetail)
-   // const infoGenData = await scrapeInfoGenSection(iframeDetail)
-   // const detallesData = await scrapeDetallesSection(iframeDetail)
-   // const infoInternaData = await scrapeInfoInternaGenSection(iframeDetail)
+   const rowIDs1 = await viewFrame.locator(`#thegridbody`).evaluate((el:HTMLElement) => {
+      const trS = el.children
+      let idS = []
+      for (const tr of trS) {
+         idS.push(tr.getAttribute("id"))
+      }
+      return idS
+   })
+   console.log({ rowIDs1 })
 
-   /* Srape Photos Data */
-   await viewFrame.locator(`#tab_tour`).click()
-   const photosData = await scrapePhotosData(viewFrame)
-   console.log({photosData})
+   const res = await scrollListDownAndWaitNewLoadedEstates(viewFrame)
 
+   console.log({res})
 
-
-   // loop until all estates are scraped
-   // how?
-   // click first tr estate
-
-   // first tr selector:
-   // `` first child of this
-   // or #thegridbody:nth-child(1)
-   // page.locator('div.some-class').nth(3)
-
-   // await viewFrame.locator(`#thegridbody`).nth(2).click()
+   const rowIDs2 = await viewFrame.locator(`#thegridbody`).evaluate((el:HTMLElement) => {
+      const trS = el.children
+      let idS = []
+      for (const tr of trS) {
+         idS.push(tr.getAttribute("id"))
+      }
+      return idS
+   })
+   console.log({ rowIDs2 })
 
 
-   // when the last tr is scraped, need to scroll
-   // elem.scroll(0, 300_000)  300_000 just a bigger number to make sure it scrolls all the way down.
-   // 100 new tr should be put in place of the old ones.
-   // so need to go back to the first tr and start scraping.
-
-
-   // table to scroll: `#gridC` inside view_frame
-
-   // scroll element #gridC
-   //    await page.evaluate(() => {
-   //       window.scrollTo(0, document.body.scrollHeight);
-   //   });
-
-
-   const sleepTime = 3_000
-   console.log("sleepin'", sleepTime)
-   await sleep(sleepTime)
-   await terminateProgram()
+   // const sleepTime = 3_000
+   // console.log("sleepin'", sleepTime)
+   // await sleep(sleepTime)
+   await cleanResources()
 }
 
 try {
    await main()
 }
 catch (e) {
-   console.log("Something went wrong.")
+   console.log("FellowMLS: something went wrong.")
    console.log(e)
-   await terminateProgram()
+   await cleanResources()
 }
 
 
-async function terminateProgram() {
+async function cleanResources() {
    console.log("Program Done")
    if (browserCtx) { await browserCtx.close() }
    if (browser) { await browser.close() }
@@ -114,6 +110,35 @@ function sleep(ms: number) {
    return new Promise(res => {
       setTimeout(res, ms)
    })
+}
+
+async function scrapeEstate(currTrIdx: number, viewFrame: FrameLocator, detailsButton: Locator, detailIframe: FrameLocator, photosButton: Locator, photosIframe: FrameLocator) {
+
+   // click n item of leftList
+   await viewFrame.locator(`#thegridbody > tr`).nth(currTrIdx).click()
+   await detailsButton.click()
+
+   /* Srape Detail Data */
+   const ubicacionData = await scrapeUbicacionSection(detailIframe)
+   const direccionData = await scrapeDireccionSection(detailIframe)
+   const descripcionData = await scrapeDescripcionSection(detailIframe)
+   const infoGenData = await scrapeInfoGenSection(detailIframe)
+   const detallesData = await scrapeDetallesSection(detailIframe)
+   const infoInternaData = await scrapeInfoInternaGenSection(detailIframe)
+
+   /* Srape Photos Data */
+   await photosButton.click()
+   const photosData = await scrapePhotosData(photosIframe)
+
+   return {
+      ubicacionData,
+      direccionData,
+      descripcionData,
+      infoGenData,
+      detallesData,
+      infoInternaData,
+      photosData
+   }
 }
 
 async function scrapeUbicacionSection(iframeDetail: FrameLocator) {
@@ -151,7 +176,7 @@ async function scrapeUbicacionSection(iframeDetail: FrameLocator) {
       ubicacionData.set(key, val)
    }
 
-   return {flexCode, ubicacionData}
+   return { flexCode, ubicacionData }
 }
 
 async function scrapeDireccionSection(iframeDetail: FrameLocator) {
@@ -207,7 +232,7 @@ async function scrapeDescripcionSection(iframeDetail: FrameLocator) {
          return [key, val]
       })
 
-      key = key.replace(":",  "").replaceAll(" ", "")
+      key = key.replace(":", "").replaceAll(" ", "")
       descripcionData.push([key, val])
    }
 
@@ -323,9 +348,9 @@ async function scrapeInfoInternaGenSection(iframeDetail: FrameLocator) {
    return infoGenScraped
 }
 
-async function scrapePhotosData(viewFrame: FrameLocator) {
+async function scrapePhotosData(photosFrameLocator: FrameLocator) {
 
-   const photosIDs = await viewFrame.frameLocator(`#iframe_tour`)
+   const photosIDs = await photosFrameLocator
       .locator(".rsThumbsContainer")
       .evaluate(el => {
          let photosIDs: string[] = []
@@ -348,4 +373,44 @@ async function scrapePhotosData(viewFrame: FrameLocator) {
 
 
    return photosIDs
+}
+
+async function scrollListDownAndWaitNewLoadedEstates(viewFrame: FrameLocator) {
+
+   await viewFrame.locator(`#gridC`).evaluate(letfListElem => {
+      letfListElem.scroll(0, 300_00)
+   })
+
+   try {
+      await viewFrame.locator(`#morelistingsbot`).waitFor({timeout: 500})
+   }
+   catch (e) {
+      if (e instanceof Error && e.name === "TimeoutError") {
+         return "end"
+      }
+   }
+
+   await viewFrame.locator(`#gridC`).evaluate(async letfListElem => {
+
+      let resolve: (value: unknown) => void
+      const promise = new Promise(res => {
+         resolve = res
+      })
+
+      letfListElem.addEventListener("scroll", () => {
+         resolve(undefined)
+      }, {once: true})
+
+      await promise
+   })
+}
+
+async function isItemLastInLeftList(currTrIdx: number, viewFrame: FrameLocator) {
+   return viewFrame.locator(`#thegridbody`).evaluate((el, idx) => {
+      const trSItems = el.children
+      if ((trSItems.length - 1) == idx) {
+         return true
+      }
+      return false
+   }, currTrIdx)
 }

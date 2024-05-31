@@ -4,7 +4,7 @@
       "moduleResolution": "Node16",
       "moduleDetection": "force",
       "module": "Node16",
-      "target": "ES2022",
+      "target": "ESNext",
       "checkJs": true,
       "skipLibCheck": true,
       "sourceMap": true,
