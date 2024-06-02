@@ -512,7 +512,7 @@ async function updateDB(schema: EstateSchema, batchEstateScraped: EstateScraped[
       for (const estateSraped of batchEstateScraped) {
          batch.create(estatesColl.doc(estateSraped.flex_code), estateSraped)
       }
-      batch.set(metaDoc, newMetaData)
+      batch.update(metaDoc, newMetaData)
       await batch.commit()
    }
 }
