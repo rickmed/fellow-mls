@@ -3,11 +3,13 @@ import { Firestore } from "@google-cloud/firestore"
 import { sleep } from "./utils.mjs"
 
 
-const timeout = 5_000
+const timeout = 20_000
 let browser!: Browser
 let browserCtx!: BrowserContext
 let db!: Firestore
 let timeoutRetries = 3
+let nListingsScrapedInSession = 0
+const saveToDBBatchSize = 5
 
 try {
    await main()
@@ -16,6 +18,7 @@ catch (e) {
    console.log("An Unexpected error was thrown.", e)
    await cleanResources()
    console.log("Program Ending.")
+   process.exit(1)
 }
 
 
@@ -23,6 +26,9 @@ async function main() {
    while (timeoutRetries > 0) {
       try {
          await start()
+         console.log("All scraping done. Program Ending.")
+         await cleanResources()
+         process.exit(0)
       }
       catch (e) {
          if (e instanceof Error && e.name === "TimeoutError" && timeoutRetries > 0) {
@@ -44,9 +50,8 @@ async function start() {
 
    const dbRsrcS = await getDBResources()
    db = dbRsrcS.db
-   let { schema } = dbRsrcS.metaData
 
-   browser = await chromium.launch({ headless: false, timeout })
+   browser = await chromium.launch({ timeout })
    browserCtx = await browser.newContext()
    const page = await browserCtx.newPage()
    page.setDefaultTimeout(timeout)
@@ -82,14 +87,15 @@ async function start() {
    await viewIFrame.locator(`#thegridbody`).waitFor()
 
    /* Sort listings MLS# descending (from newest inserted to oldest) */
-   // await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
-   // await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click()
-   // await viewIFrame.locator(`#firsttimeindiv_innerds img[src="/images/srch_rs/loading.gif"]`).isVisible()
-   // await viewIFrame.locator(`#firsttimeindiv_innerds img[src="/images/srch_rs/loading.gif"]`).isHidden()
-   // // couldnt figure what thing to wait for so that findRowIDToScrapeFrom finds correct row_id
-   // await sleep(2_000)
+   await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
+   await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click()
+   await viewIFrame.locator(`#firsttimeindiv_innerds img[src="/images/srch_rs/loading.gif"]`).isVisible()
+   await viewIFrame.locator(`#firsttimeindiv_innerds img[src="/images/srch_rs/loading.gif"]`).isHidden()
+   // couldnt figure what thing to wait for so that findRowIDToScrapeFrom finds correct row_id
+   await sleep(2_000)
 
-   let row_id = await findRowIDToScrapeFrom(viewIFrame, dbRsrcS.metaData.tr_row_id)
+   const { dbRowID } = dbRsrcS
+   let row_id = await findRowIDToScrapeFrom(viewIFrame, dbRowID)
    let batchListingScraped: ListingScraped[] = []
 
    // eslint-disable-next-line no-constant-condition
@@ -98,7 +104,6 @@ async function start() {
       try {
          // eslint-disable-next-line no-var
          var listingScraped: ListingScraped = await scrapeListing(row_id, viewIFrame, detailButton, detailIFrame, photosButton, photosIFrame)
-         console.log(row_id)
       }
       catch (e) {
          if (e instanceof Error && e.name === "Error" && e.message === "locator.evaluate: Execution context was destroyed, most likely because of a navigation") {
@@ -109,11 +114,11 @@ async function start() {
       }
 
       batchListingScraped.push(listingScraped)
-      if (batchListingScraped.length === 2) {
-         const schemaChanged = updateSchema(schema, batchListingScraped)
-         // console.log({batchListingScraped, schemaChanged, schema})
-         // await updateDB(batchListingScraped, row_id, db, schemaChanged ? schema : undefined)
+      if (batchListingScraped.length === saveToDBBatchSize) {
+         await updateDB(batchListingScraped, row_id, db)
          batchListingScraped = []
+         nListingsScrapedInSession += saveToDBBatchSize
+         console.log({nListingsScrapedInSession})
       }
 
       const isTrLast = await isTrLastofList(row_id, viewIFrame)
@@ -131,9 +136,6 @@ async function start() {
 
       row_id = newRowID
    }
-
-   console.log("All scraping done. Program Ending")
-   await cleanResources()
 }
 
 
@@ -370,14 +372,12 @@ async function scrapePhotosData(viewIFrame: FrameLocator, row_id: string, photos
          const style = div.getAttribute("style")
 
          if (!style) {
-            console.log("photo thumbnail has not style attribute")
             continue
          }
 
          const photoID = style.match(new RegExp(`/ven/(.*?).jpg`))
 
          if (!photoID) {
-            console.log("photoID not found in style")
             continue
          }
 
@@ -401,10 +401,10 @@ async function findRowIDToScrapeFrom(viewIFrame: FrameLocator, dbRowID: string) 
       return row
    }
 
-   return findRowIDorScroll()
+   return findNextRowID()
 
    // helpers
-   async function findRowIDorScroll(): Promise<string> {
+   async function findNextRowID(): Promise<string> {
       try {
          // need to find DBRow first in case it is the last of loaded rows (css sibling would fail)
          await viewIFrame.locator(`tr#${dbRowID}`).waitFor({ timeout: 20 })
@@ -426,7 +426,7 @@ async function findRowIDToScrapeFrom(viewIFrame: FrameLocator, dbRowID: string) 
       catch (e) {
          if (e instanceof Error && e.name === "TimeoutError") {
             await scrollListDownAndWaitNewLoadedListings(viewIFrame)
-            const newRowID = await findRowIDorScroll()
+            const newRowID = await findNextRowID()
             return newRowID
          }
          throw e
@@ -487,13 +487,9 @@ async function isTrLastofList(row_id: string, viewIFrame: FrameLocator) {
 
 async function cleanResources() {
    console.log("Cleaning Resources")
-   console.log("Closing browserCtx")
    await browserCtx.close()
-   console.log("Closing browser")
    await browser.close()
-   console.log("Closing db")
    await db.terminate()
-   console.log("Done Cleaning Resources")
 }
 
 
@@ -507,70 +503,26 @@ async function getDBResources() {
       databaseId: "fellowmls-scraped-1",
    })
 
-   const metaDBData = (await db.collection("meta").doc("meta").get()).data()
-   const metaData = metaDBData as { schema: ListingSchema, tr_row_id: string }
+   const rowIDDocData = (await db.collection("meta").doc("tr_row_id").get()).data()
+   const dbRowID = rowIDDocData as { row_id: string }
 
-   return { db, metaData }
+   return { db, dbRowID: dbRowID.row_id }
 }
 
-async function updateDB(batchListingScraped: ListingScraped[], row_id: string, db: Firestore, schema?: ListingSchema) {
+async function updateDB(batchListingScraped: ListingScraped[], row_id: string, db: Firestore) {
 
-   console.log({ batchData: batchListingScraped.map(x => x.flex_code) })
    const listingsColl = db.collection("listings")
-   const metaDoc = db.collection("meta").doc("meta")
-
-   const newMetaData = schema ? { schema, row_id } : { row_id }
+   const rowIDDoc = db.collection("meta").doc("tr_row_id")
 
    const batch = db.batch()
    for (const listingSraped of batchListingScraped) {
       batch.create(listingsColl.doc(listingSraped.flex_code), listingSraped)
    }
-   batch.update(metaDoc, newMetaData)
+   batch.update(rowIDDoc, {row_id})
    await batch.commit()
 }
 
-/* Returns true if schema changed; false, otherwise */
-function updateSchema(schema: ListingSchema, batchListingScraped: ListingScraped[]): boolean {
 
-   let schemaChanged = false
-
-   for (const listingScraped of batchListingScraped) {
-      const schemaChanged_ = singleListingScrapedpdateSchema(listingScraped)
-      if (schemaChanged_) {
-         schemaChanged = true
-      }
-   }
-
-   return schemaChanged
-
-   // helpers
-   function singleListingScrapedpdateSchema(listingScraped: ListingScraped) {
-      const schemafields = schema.map(x => x.field_name)
-      let schemaChanged = false
-
-      for (const k in listingScraped) {
-         if (k === "photos" || k === "flex_code") {
-            continue
-         }
-         if (k === "ubicacion" || k === "direccion" || k === "descripcion" || k === "info_general" || k === "detalles" || k === "info_interna") {
-            const scrapedData = listingScraped[k]
-
-            for (const field_name of Object.keys(scrapedData)) {
-               if (!schemafields.includes(field_name)) {
-                  schemaChanged = true
-                  schema.push({
-                     field_name,
-                     last_seen_val: scrapedData[field_name] as string,
-                     og_section: k
-                  })
-               }
-            }
-         }
-      }
-
-      return schemaChanged
-   }
-}
 
 
 /* Types */
@@ -586,15 +538,3 @@ type ListingScraped = {
    info_interna: { [k: string]: string },
    photos: string[],
 }
-
-type OgSection =
-   "ubicacion" | "direccion" | "descripcion" |
-   "info_general" | "detalles" | "info_interna"
-
-type SchemaLeaf = {
-   field_name: string,
-   last_seen_val: string,
-   og_section: OgSection,
-}
-
-type ListingSchema = SchemaLeaf[]
