@@ -3,35 +3,44 @@ import { Firestore } from "@google-cloud/firestore"
 import { sleep } from "./utils.mjs"
 
 
-const timeout = 20_000
+const timeout = 5_000
 let browser!: Browser
 let browserCtx!: BrowserContext
 let db!: Firestore
 let timeoutRetries = 3
 
-
 try {
    await main()
 }
 catch (e) {
-   if (e instanceof Error && e.name === "TimeoutError" && timeoutRetries > 0) {
-      --timeoutRetries
-      console.log("Got a TimeoutError.", e)
-      console.log("Retrying:", {timeoutRetries})
-      await cleanResources()
-      await main()
-   }
-   else {
-      console.log("An Unexpected error was thrown.", e)
-      await cleanResources()
-      console.log("Program Ending.")
+   console.log("An Unexpected error was thrown.", e)
+   await cleanResources()
+   console.log("Program Ending.")
+}
+
+
+async function main() {
+   while (timeoutRetries > 0) {
+      try {
+         await start()
+      }
+      catch (e) {
+         if (e instanceof Error && e.name === "TimeoutError" && timeoutRetries > 0) {
+            console.log("Got a TimeoutError.", e)
+            --timeoutRetries
+            console.log("Retrying. Retries left:", timeoutRetries)
+            await cleanResources()
+            continue
+         }
+         throw e
+      }
    }
 }
 
 
 /* Main */
 
-async function main() {
+async function start() {
 
    const dbRsrcS = await getDBResources()
    db = dbRsrcS.db
@@ -72,26 +81,24 @@ async function main() {
    /* Wait list to load */
    await viewIFrame.locator(`#thegridbody`).waitFor()
 
-   /* Sort estates MLS# descending (from newest inserted to oldest) */
-   await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
-   await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click()
-   await viewIFrame.locator("#firsttimeindiv_innerds").getByText("Loading ").waitFor()
-   await viewIFrame.locator("#firsttimeindiv_innerds").getByText("Loading ").isHidden()
+   /* Sort listings MLS# descending (from newest inserted to oldest) */
+   // await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
+   // await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click()
+   // await viewIFrame.locator(`#firsttimeindiv_innerds img[src="/images/srch_rs/loading.gif"]`).isVisible()
+   // await viewIFrame.locator(`#firsttimeindiv_innerds img[src="/images/srch_rs/loading.gif"]`).isHidden()
+   // // couldnt figure what thing to wait for so that findRowIDToScrapeFrom finds correct row_id
+   // await sleep(2_000)
 
-   let row_id = await findRowID(viewIFrame, dbRsrcS.metaData.tr_row_id)
-   let batchEstateScraped: EstateScraped[] = []
+   let row_id = await findRowIDToScrapeFrom(viewIFrame, dbRsrcS.metaData.tr_row_id)
+   let batchListingScraped: ListingScraped[] = []
 
    // eslint-disable-next-line no-constant-condition
    while (true) {
 
       try {
          // eslint-disable-next-line no-var
-         var estateScraped: EstateScraped = await scrapeEstate(row_id, viewIFrame, detailButton, detailIFrame, photosButton, photosIFrame)
+         var listingScraped: ListingScraped = await scrapeListing(row_id, viewIFrame, detailButton, detailIFrame, photosButton, photosIFrame)
          console.log(row_id)
-         console.log(estateScraped.flex_code)
-         console.log(estateScraped.photos[0])
-         console.log(estateScraped)
-         console.log("\n")
       }
       catch (e) {
          if (e instanceof Error && e.name === "Error" && e.message === "locator.evaluate: Execution context was destroyed, most likely because of a navigation") {
@@ -101,23 +108,23 @@ async function main() {
          throw e
       }
 
-      batchEstateScraped.push(estateScraped)
-      if (batchEstateScraped.length === 2) {
-         const schemaChanged = updateSchema(schema, batchEstateScraped)
-         // console.log({batchEstateScraped, schemaChanged, schema})
-         // await updateDB(batchEstateScraped, row_id, db, schemaChanged ? schema : undefined)
-         batchEstateScraped = []
+      batchListingScraped.push(listingScraped)
+      if (batchListingScraped.length === 2) {
+         const schemaChanged = updateSchema(schema, batchListingScraped)
+         // console.log({batchListingScraped, schemaChanged, schema})
+         // await updateDB(batchListingScraped, row_id, db, schemaChanged ? schema : undefined)
+         batchListingScraped = []
       }
 
       const isTrLast = await isTrLastofList(row_id, viewIFrame)
       if (isTrLast) {
-         const allEstatesScraped = await scrollListDownAndWaitNewLoadedEstates(viewIFrame)
-         if (allEstatesScraped) {
+         const allListingsScraped = await scrollListDownAndWaitNewLoadedListings(viewIFrame)
+         if (allListingsScraped) {
             break
          }
       }
 
-      const newRowID = await getNextSiblingRowID(row_id, viewIFrame)
+      const newRowID = await getNextSiblingTrRowID(row_id, viewIFrame)
       if (!newRowID) {
          throw Error("FellowMLS. newRowId not found.")
       }
@@ -130,13 +137,13 @@ async function main() {
 }
 
 
-/* Scrape Estates */
+/* Scrape Listings */
 
-async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsButton: Locator, detailIframe: FrameLocator, photosButton: Locator, photosIframe: FrameLocator) {
+async function scrapeListing(row_id: string, viewIFrame: FrameLocator, detailButton: Locator, detailIframe: FrameLocator, photosButton: Locator, photosIframe: FrameLocator) {
 
    // click correct item of list
    await viewIFrame.locator(`#${row_id}`).click()
-   await detailsButton.click()
+   await detailButton.click()
    await waitPrevDetailsContentToChange(row_id, viewIFrame, detailIframe)
    await sleep(500)
 
@@ -153,7 +160,7 @@ async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsBut
    const photos = await scrapePhotosData(viewIFrame, row_id, photosIframe)
 
    // so when next list tr is clicked, details page reloads all info inmediately.
-   await detailsButton.click()
+   await detailButton.click()
 
    return {
       flex_code,
@@ -384,7 +391,7 @@ async function scrapePhotosData(viewIFrame: FrameLocator, row_id: string, photos
 
 /* Utils */
 
-async function findRowID(viewIFrame: FrameLocator, dbRowID: string) {
+async function findRowIDToScrapeFrom(viewIFrame: FrameLocator, dbRowID: string) {
 
    if (dbRowID === "0") {
       const row = await viewIFrame.locator(`#thegridbody > tr`).nth(0).getAttribute("id")
@@ -394,50 +401,52 @@ async function findRowID(viewIFrame: FrameLocator, dbRowID: string) {
       return row
    }
 
-   return scrollUntilRowIDFound()
+   return findRowIDorScroll()
 
    // helpers
-   async function scrollUntilRowIDFound(): Promise<string> {
-      // need to check dbRowID is the one returned by locator
+   async function findRowIDorScroll(): Promise<string> {
       try {
-         // eslint-disable-next-line no-var
-         var gotRowID = await viewIFrame.locator(`tr#${dbRowID}`).getAttribute("id", { timeout: 20 })
-         return assertGotRowIDIsCorrect(gotRowID)
+         // need to find DBRow first in case it is the last of loaded rows (css sibling would fail)
+         await viewIFrame.locator(`tr#${dbRowID}`).waitFor({ timeout: 20 })
+         const isLast = await isTrLastofList(dbRowID, viewIFrame)
+         if (isLast) {
+            await scrollListDownAndWaitNewLoadedListings(viewIFrame)
+            const newRowID = await viewIFrame.locator(`tr#${dbRowID} + tr`).getAttribute("id")
+            if (newRowID === null) {
+               throw Error("Locating row_id")
+            }
+            return newRowID
+         }
+         const newRowID = await viewIFrame.locator(`tr#${dbRowID} + tr`).getAttribute("id")
+         if (newRowID === null) {
+            throw Error("Locating row_id")
+         }
+         return newRowID
       }
       catch (e) {
          if (e instanceof Error && e.name === "TimeoutError") {
-            await scrollListDownAndWaitNewLoadedEstates(viewIFrame)
-            const gotRowID = await scrollUntilRowIDFound()
-            return assertGotRowIDIsCorrect(gotRowID)
+            await scrollListDownAndWaitNewLoadedListings(viewIFrame)
+            const newRowID = await findRowIDorScroll()
+            return newRowID
          }
          throw e
       }
    }
-
-   function assertGotRowIDIsCorrect(gotRowID: string | null) {
-      if (gotRowID == null) {
-         throw Error(`Got null when finding rowID`)
-      }
-      if (gotRowID !== dbRowID) {
-         throw Error(`Got rowID from scraping is different from dbRowID; gotRowID: ${gotRowID}, dbRowID: ${dbRowID}}}`)
-      }
-      return gotRowID
-   }
 }
 
-function getNextSiblingRowID(row_id: string, viewIFrame: FrameLocator) {
+function getNextSiblingTrRowID(row_id: string, viewIFrame: FrameLocator) {
    return viewIFrame.locator(`#${row_id} + tr`).getAttribute("id")
 }
 
-/* returns true is spinner didn't appear, ie, all estates we scraped */
-async function scrollListDownAndWaitNewLoadedEstates(viewIFrame: FrameLocator) {
+/* Returns true is spinner didn't appear, ie, all listings were scraped */
+async function scrollListDownAndWaitNewLoadedListings(viewIFrame: FrameLocator) {
 
    await viewIFrame.locator(`#gridC`).evaluate(letfListElem => {
       letfListElem.scroll(0, 300_00)
    })
 
    try {
-      await viewIFrame.locator(`#morelistingsbot`).waitFor({ timeout: 500 })
+      await viewIFrame.locator(`#morelistingsbot`).getByText("more listings ").isVisible({ timeout: 500 })
    }
    catch (e) {
       if (e instanceof Error && e.name === "TimeoutError") {
@@ -446,19 +455,21 @@ async function scrollListDownAndWaitNewLoadedEstates(viewIFrame: FrameLocator) {
       throw e
    }
 
-   await viewIFrame.locator(`#gridC`).evaluate(async letfListElem => {
+   await viewIFrame.locator(`#morelistingsbot`).getByText("more listings ").isHidden()
 
-      let resolve: (value: unknown) => void
-      const promise = new Promise(res => {
-         resolve = res
-      })
+   // await viewIFrame.locator(`#gridC`).evaluate(async letfListElem => {
 
-      letfListElem.addEventListener("scroll", () => {
-         resolve(undefined)
-      }, { once: true })
+   //    let resolve: (value: unknown) => void
+   //    const promise = new Promise(res => {
+   //       resolve = res
+   //    })
 
-      await promise
-   })
+   //    letfListElem.addEventListener("scroll", () => {
+   //       resolve(undefined)
+   //    }, { once: true })
+
+   //    await promise
+   // })
 
    return false
 }
@@ -476,9 +487,13 @@ async function isTrLastofList(row_id: string, viewIFrame: FrameLocator) {
 
 async function cleanResources() {
    console.log("Cleaning Resources")
+   console.log("Closing browserCtx")
    await browserCtx.close()
+   console.log("Closing browser")
    await browser.close()
+   console.log("Closing db")
    await db.terminate()
+   console.log("Done Cleaning Resources")
 }
 
 
@@ -488,39 +503,39 @@ async function getDBResources() {
 
    const db = new Firestore({
       projectId: "lofty-foundry-424913-q8",
-      keyFilename: "./secrets/firestore-estates-certs.json",
+      keyFilename: "./secrets/firestore-listings-certs.json",
       databaseId: "fellowmls-scraped-1",
    })
 
    const metaDBData = (await db.collection("meta").doc("meta").get()).data()
-   const metaData = metaDBData as { schema: EstateSchema, tr_row_id: string }
+   const metaData = metaDBData as { schema: ListingSchema, tr_row_id: string }
 
    return { db, metaData }
 }
 
-async function updateDB(batchEstateScraped: EstateScraped[], row_id: string, db: Firestore, schema?: EstateSchema) {
+async function updateDB(batchListingScraped: ListingScraped[], row_id: string, db: Firestore, schema?: ListingSchema) {
 
-   console.log({ batchData: batchEstateScraped.map(x => x.flex_code) })
-   const estatesColl = db.collection("estates")
+   console.log({ batchData: batchListingScraped.map(x => x.flex_code) })
+   const listingsColl = db.collection("listings")
    const metaDoc = db.collection("meta").doc("meta")
 
    const newMetaData = schema ? { schema, row_id } : { row_id }
 
    const batch = db.batch()
-   for (const estateSraped of batchEstateScraped) {
-      batch.create(estatesColl.doc(estateSraped.flex_code), estateSraped)
+   for (const listingSraped of batchListingScraped) {
+      batch.create(listingsColl.doc(listingSraped.flex_code), listingSraped)
    }
    batch.update(metaDoc, newMetaData)
    await batch.commit()
 }
 
 /* Returns true if schema changed; false, otherwise */
-function updateSchema(schema: EstateSchema, batchEstateScraped: EstateScraped[]): boolean {
+function updateSchema(schema: ListingSchema, batchListingScraped: ListingScraped[]): boolean {
 
    let schemaChanged = false
 
-   for (const estateScraped of batchEstateScraped) {
-      const schemaChanged_ = singleEstateScrapedpdateSchema(estateScraped)
+   for (const listingScraped of batchListingScraped) {
+      const schemaChanged_ = singleListingScrapedpdateSchema(listingScraped)
       if (schemaChanged_) {
          schemaChanged = true
       }
@@ -529,16 +544,16 @@ function updateSchema(schema: EstateSchema, batchEstateScraped: EstateScraped[])
    return schemaChanged
 
    // helpers
-   function singleEstateScrapedpdateSchema(estateScraped: EstateScraped) {
+   function singleListingScrapedpdateSchema(listingScraped: ListingScraped) {
       const schemafields = schema.map(x => x.field_name)
       let schemaChanged = false
 
-      for (const k in estateScraped) {
+      for (const k in listingScraped) {
          if (k === "photos" || k === "flex_code") {
             continue
          }
          if (k === "ubicacion" || k === "direccion" || k === "descripcion" || k === "info_general" || k === "detalles" || k === "info_interna") {
-            const scrapedData = estateScraped[k]
+            const scrapedData = listingScraped[k]
 
             for (const field_name of Object.keys(scrapedData)) {
                if (!schemafields.includes(field_name)) {
@@ -560,7 +575,7 @@ function updateSchema(schema: EstateSchema, batchEstateScraped: EstateScraped[])
 
 /* Types */
 
-type EstateScraped = {
+type ListingScraped = {
    row_id: string,
    flex_code: string,
    ubicacion: { [k: string]: string },
@@ -582,4 +597,4 @@ type SchemaLeaf = {
    og_section: OgSection,
 }
 
-type EstateSchema = SchemaLeaf[]
+type ListingSchema = SchemaLeaf[]
