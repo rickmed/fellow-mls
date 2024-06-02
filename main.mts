@@ -1,39 +1,39 @@
 import { chromium, type BrowserContext, type Browser, FrameLocator, Locator } from "playwright"
 import { Firestore } from "@google-cloud/firestore"
+import { sleep } from "./utils.mjs"
+
 
 const timeout = 20_000
 let browser!: Browser
 let browserCtx!: BrowserContext
 let db!: Firestore
+let timeoutRetries = 3
 
-type EstateScraped = {
-   row_id: string,
-   flex_code: string,
-   ubicacion: [string, string][],
-   direccion: [string, string][],
-   descripcion: [string, string][],
-   info_general: [string, string][],
-   detalles: [string, string][],
-   info_interna: [string, string][],
-   photos: string[],
+
+try {
+   await main()
+}
+catch (e) {
+   if (e instanceof Error && e.name === "TimeoutError" && timeoutRetries > 0) {
+      --timeoutRetries
+      console.log("Got a TimeoutError.", e)
+      console.log("Retrying:", {timeoutRetries})
+      await cleanResources()
+      await main()
+   }
+   else {
+      console.log("An Unexpected error was thrown.", e)
+      await cleanResources()
+      console.log("Program Ending.")
+   }
 }
 
-type OgSection =
-   "ubicacion" | "direccion" | "descripcion" |
-   "info_general" | "detalles" | "info_interna"
 
-type SchemaLeaf = {
-   field_name: string,
-   last_seen_val: string,
-   og_section: OgSection,
-}
-
-type EstateSchema = SchemaLeaf[]
-
+/* Main */
 
 async function main() {
 
-   const dbRsrcS = await getDBRsrcS()
+   const dbRsrcS = await getDBResources()
    db = dbRsrcS.db
    let { schema } = dbRsrcS.metaData
 
@@ -51,34 +51,34 @@ async function main() {
 
    await page.goto(`https://ven.flexmls.com/`)
 
+   /* Login */
    await page.locator("#user").fill(`ven.anarodriguez`)
    await page.locator(`#login-button`).click()
-
    await page.locator(`#password`).fill(`Manuelm87`)
    await page.locator(`#login-button`).click()
 
+   /* Locators used in program */
    const topIFrame = page.frameLocator(`#top_frame`)
    const viewIFrame = topIFrame.frameLocator(`#view_frame`)
-
-   /* Open listings of Zonas Anais saved search */
-   await topIFrame.locator(`#bookmarkMenuItems *[data-id="SavedSearches"]`).click()
-   await viewIFrame.getByText("Zona Anais").click()
-
-   // Wait list to load
-   await viewIFrame.locator(`#thegridbody`).waitFor()
-
-   /* Locators used in program */
    const detailButton = viewIFrame.locator(`#tab_detail`)
    const detailIFrame = viewIFrame.frameLocator(`#iframe_detail`)
    const photosButton = viewIFrame.locator(`#tab_tour`)
    const photosIFrame = viewIFrame.frameLocator(`#iframe_tour`)
 
-   /* Sort estates MLS# descending (from newest inserted to oldest) */
-   /*    await viewIFrame.locator(`#thegridbody`).waitFor()
-      await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
-      await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click() */
+   /* Open listings of Zonas Anais saved search */
+   await topIFrame.locator(`#bookmarkMenuItems *[data-id="SavedSearches"]`).click()
+   await viewIFrame.getByText("Zona Anais").click()
 
-   let row_id = await findRowID(viewIFrame, dbRsrcS.metaData.row_id)
+   /* Wait list to load */
+   await viewIFrame.locator(`#thegridbody`).waitFor()
+
+   /* Sort estates MLS# descending (from newest inserted to oldest) */
+   await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
+   await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click()
+   await viewIFrame.locator("#firsttimeindiv_innerds").getByText("Loading ").waitFor()
+   await viewIFrame.locator("#firsttimeindiv_innerds").getByText("Loading ").isHidden()
+
+   let row_id = await findRowID(viewIFrame, dbRsrcS.metaData.tr_row_id)
    let batchEstateScraped: EstateScraped[] = []
 
    // eslint-disable-next-line no-constant-condition
@@ -87,6 +87,11 @@ async function main() {
       try {
          // eslint-disable-next-line no-var
          var estateScraped: EstateScraped = await scrapeEstate(row_id, viewIFrame, detailButton, detailIFrame, photosButton, photosIFrame)
+         console.log(row_id)
+         console.log(estateScraped.flex_code)
+         console.log(estateScraped.photos[0])
+         console.log(estateScraped)
+         console.log("\n")
       }
       catch (e) {
          if (e instanceof Error && e.name === "Error" && e.message === "locator.evaluate: Execution context was destroyed, most likely because of a navigation") {
@@ -98,7 +103,9 @@ async function main() {
 
       batchEstateScraped.push(estateScraped)
       if (batchEstateScraped.length === 2) {
-         await updateDB(schema, batchEstateScraped, row_id, db)
+         const schemaChanged = updateSchema(schema, batchEstateScraped)
+         // console.log({batchEstateScraped, schemaChanged, schema})
+         // await updateDB(batchEstateScraped, row_id, db, schemaChanged ? schema : undefined)
          batchEstateScraped = []
       }
 
@@ -122,42 +129,6 @@ async function main() {
    await cleanResources()
 }
 
-let retries = 3
-
-try {
-   await main()
-}
-catch (e) {
-   if (e instanceof Error && e.name === "TimeoutError" && retries > 0) {
-      console.log("Got a TimeoutError. Retrying:", retries)
-      await cleanResources()
-      --retries
-      await main()
-   }
-   else {
-      console.log("An Unexpected error was thrown.", e)
-      await cleanResources()
-      console.log("Program Ending.")
-   }
-}
-
-
-/* Setup and download DB stuff */
-async function getDBRsrcS() {
-
-   const db = new Firestore({
-      projectId: "lofty-foundry-424913-q8",
-      keyFilename: "./secrets/firestore-estates-certs.json",
-      databaseId: "fellowmls-scraped-1",
-   })
-
-   const metaDBData = (await db.collection("meta").doc("meta").get()).data()
-   const metaData = metaDBData as { schema: EstateSchema, row_id: string }
-
-   return { db, metaData }
-}
-
-
 
 /* Scrape Estates */
 
@@ -166,6 +137,8 @@ async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsBut
    // click correct item of list
    await viewIFrame.locator(`#${row_id}`).click()
    await detailsButton.click()
+   await waitPrevDetailsContentToChange(row_id, viewIFrame, detailIframe)
+   await sleep(500)
 
    /* Srape Detail Data */
    const { flex_code, ubicacion } = await scrapeUbicacionSection(detailIframe)
@@ -177,7 +150,7 @@ async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsBut
 
    /* Srape Photos Data */
    await photosButton.click()
-   const photos = await scrapePhotosData(photosIframe)
+   const photos = await scrapePhotosData(viewIFrame, row_id, photosIframe)
 
    // so when next list tr is clicked, details page reloads all info inmediately.
    await detailsButton.click()
@@ -195,13 +168,20 @@ async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsBut
    }
 }
 
+async function waitPrevDetailsContentToChange(row_id: string, viewIFrame: FrameLocator, detailIframe: FrameLocator) {
+   const flexCode = await viewIFrame.locator(`tr#${row_id} .listnbrcontainer a#listingNumberAnchor`)
+      .first().evaluate((el: HTMLElement) => el.innerText)
+
+   await detailIframe.getByText(flexCode).isVisible()
+}
+
 async function scrapeUbicacionSection(detailIframe: FrameLocator) {
 
    return detailIframe.locator("table.style20080305202843445493000000").evaluate(el => {
 
       let flex_code = ""
 
-      const ubicacion: Array<[string, string]> = []
+      const ubicacion: { [k: string]: string } = {}
 
       const kElemS = el.querySelectorAll(`td.datalabelfont.style20080305202843639362000000`)
 
@@ -216,7 +196,7 @@ async function scrapeUbicacionSection(detailIframe: FrameLocator) {
             continue
          }
 
-         ubicacion.push([k, val])
+         ubicacion[k] = val
       }
 
       return { flex_code, ubicacion }
@@ -243,12 +223,14 @@ async function scrapeDireccionSection(detailIframe: FrameLocator) {
          direccion.push(val)
       }
 
-      const data = [
-         ["nombre del inmueble", nombreDelInmueble],
-         ["direccion", direccion.join(" ")]
-      ]
+      const direccionStr = direccion.join(" ")
 
-      return data as Array<[string, string]>
+      const data = {
+         ["nombre del inmueble"]: nombreDelInmueble,
+         ["direccion"]: direccionStr
+      }
+
+      return data
    })
 }
 
@@ -256,7 +238,7 @@ async function scrapeDescripcionSection(detailIframe: FrameLocator) {
 
    return detailIframe.locator(`table.style20080305202843849962000000`).evaluate(el => {
 
-      const data: Array<[string, string]> = []
+      const data: { [k: string]: string } = {}
 
       const kElemS = el.querySelectorAll(`span.datalabelfont.style20080305202844068284000000`)
 
@@ -266,7 +248,7 @@ async function scrapeDescripcionSection(detailIframe: FrameLocator) {
          const val = valElem.innerText
          if (!k) continue
          if (!val) continue
-         data.push([k, val])
+         data[k] = val
       }
 
       return data
@@ -281,7 +263,7 @@ async function scrapeInfoGenSection(detailIframe: FrameLocator) {
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
       const trS = tbody?.childNodes!
 
-      const data: Array<[string, string]> = []
+      const data: { [k: string]: string } = {}
 
       for (const tr of trS) {
          const tdS = tr.childNodes
@@ -296,7 +278,7 @@ async function scrapeInfoGenSection(detailIframe: FrameLocator) {
             }
             const val = td.innerText
             if (!val) continue
-            data.push([k, val])
+            data[k] = val
             k = undefined
          }
       }
@@ -317,18 +299,20 @@ async function scrapeDetallesSection(detailIframe: FrameLocator) {
          .join("; ")
    })
 
-   const splitted = scraped.split("; ")
-   const data = splitted.map(kVals => {
+   let data: { [k: string]: string } = {}
+
+   for (const kVals of scraped.split("; ")) {
       const pair = kVals.split(": ")
       const k = pair[0] as string
       if (pair.length === 1) {
-         return [k, "Si"]
+         data[k] = "Si"
+         continue
       }
       const val = pair[1] as string
-      return [k, val]
-   })
+      data[k] = val
+   }
 
-   return data as Array<[string, string]>
+   return data
 }
 
 async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
@@ -339,7 +323,7 @@ async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
       const trS = tbody?.childNodes!
 
-      const data: Array<[string, string]> = []
+      const data: { [k: string]: string } = {}
 
       for (const tr of trS) {
          const tdS = tr.childNodes
@@ -354,7 +338,7 @@ async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
             }
             const val = td.innerText
             if (!val) continue
-            data.push([k, val])
+            data[k] = val
             k = undefined
          }
       }
@@ -363,7 +347,11 @@ async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
    })
 }
 
-async function scrapePhotosData(photosIframe: FrameLocator) {
+async function scrapePhotosData(viewIFrame: FrameLocator, row_id: string, photosIframe: FrameLocator) {
+
+   const rowPhotoThumbnailSrc = await viewIFrame.locator(`#${row_id} .gridonelineplaceholdercolumn.photocell img.gridtd-photo`).getAttribute("src")
+   /* Wait until same photo is present in carousel */
+   await photosIframe.locator(`.rsThumbsContainer div[style*="${rowPhotoThumbnailSrc}"]`).waitFor()
 
    return photosIframe.locator(".rsThumbsContainer").evaluate(el => {
 
@@ -397,6 +385,7 @@ async function scrapePhotosData(photosIframe: FrameLocator) {
 /* Utils */
 
 async function findRowID(viewIFrame: FrameLocator, dbRowID: string) {
+
    if (dbRowID === "0") {
       const row = await viewIFrame.locator(`#thegridbody > tr`).nth(0).getAttribute("id")
       if (!row) {
@@ -404,8 +393,8 @@ async function findRowID(viewIFrame: FrameLocator, dbRowID: string) {
       }
       return row
    }
-   return scrollUntilRowIDFound()
 
+   return scrollUntilRowIDFound()
 
    // helpers
    async function scrollUntilRowIDFound(): Promise<string> {
@@ -492,60 +481,105 @@ async function cleanResources() {
    await db.terminate()
 }
 
-async function updateDB(schema: EstateSchema, batchEstateScraped: EstateScraped[], row_id: string, db: Firestore) {
-   let schemaChanged = false
-   for (const estateScraped of batchEstateScraped) {
-      schemaChanged = updateSchema(estateScraped, schema)
+
+/* DB stuff */
+
+async function getDBResources() {
+
+   const db = new Firestore({
+      projectId: "lofty-foundry-424913-q8",
+      keyFilename: "./secrets/firestore-estates-certs.json",
+      databaseId: "fellowmls-scraped-1",
+   })
+
+   const metaDBData = (await db.collection("meta").doc("meta").get()).data()
+   const metaData = metaDBData as { schema: EstateSchema, tr_row_id: string }
+
+   return { db, metaData }
+}
+
+async function updateDB(batchEstateScraped: EstateScraped[], row_id: string, db: Firestore, schema?: EstateSchema) {
+
+   console.log({ batchData: batchEstateScraped.map(x => x.flex_code) })
+   const estatesColl = db.collection("estates")
+   const metaDoc = db.collection("meta").doc("meta")
+
+   const newMetaData = schema ? { schema, row_id } : { row_id }
+
+   const batch = db.batch()
+   for (const estateSraped of batchEstateScraped) {
+      batch.create(estatesColl.doc(estateSraped.flex_code), estateSraped)
    }
-
-   await execUpdateDB(schemaChanged ? schema : undefined)
-
-   // helpers
-   async function execUpdateDB(schema?: EstateSchema) {
-
-      const estatesColl = db.collection("estates")
-      const metaDoc = db.collection("meta").doc("meta")
-
-      const newMetaData = schema ? { schema, row_id } : { row_id }
-
-      const batch = db.batch()
-      for (const estateSraped of batchEstateScraped) {
-         batch.create(estatesColl.doc(estateSraped.flex_code), estateSraped)
-      }
-      batch.update(metaDoc, newMetaData)
-      await batch.commit()
-   }
+   batch.update(metaDoc, newMetaData)
+   await batch.commit()
 }
 
 /* Returns true if schema changed; false, otherwise */
-function updateSchema(estateScraped: EstateScraped, schema: EstateSchema): boolean {
+function updateSchema(schema: EstateSchema, batchEstateScraped: EstateScraped[]): boolean {
 
    let schemaChanged = false
 
-   for (const k in estateScraped) {
-      if (k === "photos" || k === "flex_code") {
-         continue
-      }
-      if (
-         k === "ubicacion" || k === "direccion" || k === "descripcion" ||
-         k === "info_general" || k === "detalles" || k === "info_interna"
-      ) {
-
-         const scraped = estateScraped[k]
-         const currSchemafieldNames = schema.map(x => x.field_name)
-
-         for (const [field_name, v] of scraped) {
-            if (!currSchemafieldNames.includes(field_name)) {
-               schemaChanged = true
-               schema.push({
-                  field_name,
-                  last_seen_val: v,
-                  og_section: k
-               })
-            }
-         }
+   for (const estateScraped of batchEstateScraped) {
+      const schemaChanged_ = singleEstateScrapedpdateSchema(estateScraped)
+      if (schemaChanged_) {
+         schemaChanged = true
       }
    }
 
    return schemaChanged
+
+   // helpers
+   function singleEstateScrapedpdateSchema(estateScraped: EstateScraped) {
+      const schemafields = schema.map(x => x.field_name)
+      let schemaChanged = false
+
+      for (const k in estateScraped) {
+         if (k === "photos" || k === "flex_code") {
+            continue
+         }
+         if (k === "ubicacion" || k === "direccion" || k === "descripcion" || k === "info_general" || k === "detalles" || k === "info_interna") {
+            const scrapedData = estateScraped[k]
+
+            for (const field_name of Object.keys(scrapedData)) {
+               if (!schemafields.includes(field_name)) {
+                  schemaChanged = true
+                  schema.push({
+                     field_name,
+                     last_seen_val: scrapedData[field_name] as string,
+                     og_section: k
+                  })
+               }
+            }
+         }
+      }
+
+      return schemaChanged
+   }
 }
+
+
+/* Types */
+
+type EstateScraped = {
+   row_id: string,
+   flex_code: string,
+   ubicacion: { [k: string]: string },
+   direccion: { [k: string]: string },
+   descripcion: { [k: string]: string },
+   info_general: { [k: string]: string },
+   detalles: { [k: string]: string },
+   info_interna: { [k: string]: string },
+   photos: string[],
+}
+
+type OgSection =
+   "ubicacion" | "direccion" | "descripcion" |
+   "info_general" | "detalles" | "info_interna"
+
+type SchemaLeaf = {
+   field_name: string,
+   last_seen_val: string,
+   og_section: OgSection,
+}
+
+type EstateSchema = SchemaLeaf[]
