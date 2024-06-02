@@ -1,19 +1,42 @@
 import { chromium, type BrowserContext, type Browser, FrameLocator, Locator } from "playwright"
-import {sleep} from "./utils.mjs"
+import { Firestore } from "@google-cloud/firestore"
 
-const timeout = 10_000
+const timeout = 20_000
 let browser!: Browser
 let browserCtx!: BrowserContext
+let db!: Firestore
 
-type FlexCode = string
-type Map_ = Map<string, string>
-type DataContent = {
-   ubicacion: Map_,
-   direccion: Map_
+type EstateScraped = {
+   row_id: string,
+   flex_code: string,
+   ubicacion: [string, string][],
+   direccion: [string, string][],
+   descripcion: [string, string][],
+   info_general: [string, string][],
+   detalles: [string, string][],
+   info_interna: [string, string][],
+   photos: string[],
 }
-type EstateData = Map<FlexCode, DataContent>
+
+type OgSection =
+   "ubicacion" | "direccion" | "descripcion" |
+   "info_general" | "detalles" | "info_interna"
+
+type SchemaLeaf = {
+   field_name: string,
+   last_seen_val: string,
+   og_section: OgSection,
+}
+
+type EstateSchema = SchemaLeaf[]
+
 
 async function main() {
+
+   const dbRsrcS = await getDBRsrcS()
+   db = dbRsrcS.db
+   let { schema } = dbRsrcS.metaData
+
    browser = await chromium.launch({ headless: false, timeout })
    browserCtx = await browser.newContext()
    const page = await browserCtx.newPage()
@@ -55,30 +78,29 @@ async function main() {
       await viewIFrame.locator(`#header_for_grid`).getByText(`MLS #`).click()
       await viewIFrame.locator(`#dropmenudiv`).getByText(`Sort Descending`).click() */
 
-   // from db or:
-   let row_id = await viewIFrame.locator(`#thegridbody > tr`).nth(0).getAttribute("id")
-   if (!row_id) {
-      throw Error("FellowMLS. row_id not found at init")
-   }
+   let row_id = await findRowID(viewIFrame, dbRsrcS.metaData.row_id)
+   let batchEstateScraped: EstateScraped[] = []
 
    // eslint-disable-next-line no-constant-condition
    while (true) {
 
       try {
          // eslint-disable-next-line no-var
-         var estateData = await scrapeEstate(row_id, viewIFrame, detailButton, detailIFrame, photosButton, photosIFrame)
+         var estateScraped: EstateScraped = await scrapeEstate(row_id, viewIFrame, detailButton, detailIFrame, photosButton, photosIFrame)
       }
       catch (e) {
          if (e instanceof Error && e.name === "Error" && e.message === "locator.evaluate: Execution context was destroyed, most likely because of a navigation") {
-            console.log("An evaluator failed. Retrying row_id.", {row_id})
+            console.log("An evaluator failed. Retrying row_id.", { row_id })
             continue
          }
-         break
+         throw e
       }
 
-      const toDB = {...estateData, row_id}
-      // save estateData to db, here
-      // and save row_id in a separate field.
+      batchEstateScraped.push(estateScraped)
+      if (batchEstateScraped.length === 2) {
+         await updateDB(schema, batchEstateScraped, row_id, db)
+         batchEstateScraped = []
+      }
 
       const isTrLast = await isTrLastofList(row_id, viewIFrame)
       if (isTrLast) {
@@ -96,36 +118,48 @@ async function main() {
       row_id = newRowID
    }
 
+   console.log("All scraping done. Program Ending")
    await cleanResources()
 }
+
+let retries = 3
 
 try {
    await main()
 }
 catch (e) {
-   console.log("FellowMLS: something threw.")
-   if (e instanceof Error) {
-      console.log("An Error was thrown.")
-      console.log("ERROR MSG:", e.message)
-      console.log("ERROR:", e)
+   if (e instanceof Error && e.name === "TimeoutError" && retries > 0) {
+      console.log("Got a TimeoutError. Retrying:", retries)
+      await cleanResources()
+      --retries
+      await main()
    }
-   await cleanResources()
-}
-
-
-async function cleanResources() {
-   console.log("Program Done")
-   if (browserCtx) {
-      await browserCtx.close()
-   }
-   if (browser) {
-      await browser.close()
+   else {
+      console.log("An Unexpected error was thrown.", e)
+      await cleanResources()
+      console.log("Program Ending.")
    }
 }
 
-function getNextSiblingRowID(row_id: string, viewIFrame: FrameLocator) {
-   return viewIFrame.locator(`#${row_id} + tr`).getAttribute("id")
+
+/* Setup and download DB stuff */
+async function getDBRsrcS() {
+
+   const db = new Firestore({
+      projectId: "lofty-foundry-424913-q8",
+      keyFilename: "./secrets/firestore-estates-certs.json",
+      databaseId: "fellowmls-scraped-1",
+   })
+
+   const metaDBData = (await db.collection("meta").doc("meta").get()).data()
+   const metaData = metaDBData as { schema: EstateSchema, row_id: string }
+
+   return { db, metaData }
 }
+
+
+
+/* Scrape Estates */
 
 async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsButton: Locator, detailIframe: FrameLocator, photosButton: Locator, photosIframe: FrameLocator) {
 
@@ -134,28 +168,30 @@ async function scrapeEstate(row_id: string, viewIFrame: FrameLocator, detailsBut
    await detailsButton.click()
 
    /* Srape Detail Data */
-   const ubicacionData = await scrapeUbicacionSection(detailIframe)
-   const direccionData = await scrapeDireccionSection(detailIframe)
-   const descripcionData = await scrapeDescripcionSection(detailIframe)
-   const infoGenData = await scrapeInfoGenSection(detailIframe)
-   const detallesData = await scrapeDetallesSection(detailIframe)
-   const infoInternaData = await scrapeInfoInternaSection(detailIframe)
+   const { flex_code, ubicacion } = await scrapeUbicacionSection(detailIframe)
+   const direccion = await scrapeDireccionSection(detailIframe)
+   const descripcion = await scrapeDescripcionSection(detailIframe)
+   const info_general = await scrapeInfoGenSection(detailIframe)
+   const detalles = await scrapeDetallesSection(detailIframe)
+   const info_interna = await scrapeInfoInternaSection(detailIframe)
 
    /* Srape Photos Data */
    await photosButton.click()
-   const photosData = await scrapePhotosData(photosIframe)
+   const photos = await scrapePhotosData(photosIframe)
 
    // so when next list tr is clicked, details page reloads all info inmediately.
    await detailsButton.click()
 
    return {
-      ubicacionData,
-      direccionData,
-      descripcionData,
-      infoGenData,
-      detallesData,
-      infoInternaData,
-      photosData
+      flex_code,
+      ubicacion,
+      direccion,
+      descripcion,
+      info_general,
+      detalles,
+      info_interna,
+      photos,
+      row_id,
    }
 }
 
@@ -163,27 +199,27 @@ async function scrapeUbicacionSection(detailIframe: FrameLocator) {
 
    return detailIframe.locator("table.style20080305202843445493000000").evaluate(el => {
 
-      let flexCode = ""
+      let flex_code = ""
 
-      const ubicacionData: Array<[string, string]> = []
+      const ubicacion: Array<[string, string]> = []
 
       const kElemS = el.querySelectorAll(`td.datalabelfont.style20080305202843639362000000`)
 
       for (const kElem of kElemS) {
-         let k = kElem.textContent?.replace(":", "")
+         let k = kElem.textContent
          const valElem = kElem.nextSibling as HTMLElement
          const val = valElem.innerText
          if (!k) continue
          if (!val) continue
-         if (k === "Codigo de Inmueble") {
-            flexCode = val
+         if (k === "Codigo de Inmueble:") {
+            flex_code = val
             continue
          }
-         k = k.replaceAll(" ", "")
-         ubicacionData.push([k, val])
+
+         ubicacion.push([k, val])
       }
 
-      return {flexCode, ubicacionData}
+      return { flex_code, ubicacion }
    })
 }
 
@@ -207,7 +243,12 @@ async function scrapeDireccionSection(detailIframe: FrameLocator) {
          direccion.push(val)
       }
 
-      return {nombreDelInmueble, direccion: direccion.join(" ")}
+      const data = [
+         ["nombre del inmueble", nombreDelInmueble],
+         ["direccion", direccion.join(" ")]
+      ]
+
+      return data as Array<[string, string]>
    })
 }
 
@@ -220,7 +261,7 @@ async function scrapeDescripcionSection(detailIframe: FrameLocator) {
       const kElemS = el.querySelectorAll(`span.datalabelfont.style20080305202844068284000000`)
 
       for (const kElem of kElemS) {
-         let k = kElem.textContent?.replace(":", "").replaceAll(" ", "")
+         let k = kElem.textContent
          const valElem = kElem.nextSibling as HTMLElement
          const val = valElem.innerText
          if (!k) continue
@@ -250,10 +291,10 @@ async function scrapeInfoGenSection(detailIframe: FrameLocator) {
          for (const td_ of tdS) {
             const td = td_ as HTMLElement
             if (!k) {
-               k = td.innerText?.trim().replace(":", "").replaceAll(" ", "")
+               k = td.innerText
                continue
             }
-            const val = td.innerText?.trim()
+            const val = td.innerText
             if (!val) continue
             data.push([k, val])
             k = undefined
@@ -266,54 +307,33 @@ async function scrapeInfoGenSection(detailIframe: FrameLocator) {
 
 async function scrapeDetallesSection(detailIframe: FrameLocator) {
 
-   const detallesScraped = await detailIframe.getByText("Detalles Inmueble:").evaluate(el => {
-
-      const tbody = el.parentElement?.parentElement
-      // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
-      const trS = tbody?.childNodes!
-
-      const data: Array<[string, string]> = []
-
-      for (const tr of trS) {
-         const tdS = tr.childNodes
-
-         let k: string | undefined = undefined
-
-         for (const td_ of tdS) {
-            const td = td_ as HTMLElement
-            if (!k) {
-               k = td.innerText?.trim().replace(":", " ").replace(";", " ").replaceAll(" ", "")
-               continue
-            }
-
-            const spanValues = td.innerText
-            if (!spanValues) continue
-            if (!k) continue
-            data.push([k, spanValues])
-            k = undefined
-         }
-      }
-
-      return data
+   const scraped = await detailIframe.locator(`table.style20080305202843849962000000`).evaluate(el => {
+      const kElemS = el.querySelectorAll(`td.style20080305202844557512000000`)
+      return [...kElemS]
+         .map(el => {
+            const el_ = el as HTMLElement
+            return el_.innerText
+         })
+         .join("; ")
    })
 
-   const data =  detallesScraped.map(x => x[1]).join("; ").split("; ")
-      .map(kVals => {
-         const pair = kVals.split(": ")
-         const k = pair[0]?.replaceAll(" ", "")
-         if (pair.length === 1) {
-            return [k, "Si"]
-         }
-         const val = pair[1]
-         return [k, val]
-      })
+   const splitted = scraped.split("; ")
+   const data = splitted.map(kVals => {
+      const pair = kVals.split(": ")
+      const k = pair[0] as string
+      if (pair.length === 1) {
+         return [k, "Si"]
+      }
+      const val = pair[1] as string
+      return [k, val]
+   })
 
-   return data
+   return data as Array<[string, string]>
 }
 
 async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
 
-   const infoGenScraped = await detailIframe.getByText("Informacion Interna").evaluate(el => {
+   return detailIframe.getByText("Informacion Interna").evaluate(el => {
 
       const tbody = el.nextSibling?.childNodes[0]
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
@@ -329,10 +349,10 @@ async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
          for (const td_ of tdS) {
             const td = td_ as HTMLElement
             if (!k) {
-               k = td.innerText?.trim().replace(":", " ").replaceAll(" ", "")
+               k = td.innerText
                continue
             }
-            const val = td.innerText?.trim()
+            const val = td.innerText
             if (!val) continue
             data.push([k, val])
             k = undefined
@@ -341,35 +361,83 @@ async function scrapeInfoInternaSection(detailIframe: FrameLocator) {
 
       return data
    })
-
-   return infoGenScraped
 }
 
 async function scrapePhotosData(photosIframe: FrameLocator) {
 
-   const photosIDs = await photosIframe
-      .locator(".rsThumbsContainer")
-      .evaluate(el => {
-         let photosIDs: string[] = []
-         const photoThumbsDivs = el.querySelectorAll(".rsTmb.photo ")
-         for (const div of photoThumbsDivs) {
-            const style = div.getAttribute("style")
-            if (!style) {
-               console.log("photo thumbnail has not style attribute")
-               continue
-            }
-            const photoID = style.match(new RegExp(`/ven/(.*?).jpg`))
-            if (!photoID) {
-               console.log("photoID not found in style")
-               continue
-            }
-            photosIDs.push(photoID[1]!)
+   return photosIframe.locator(".rsThumbsContainer").evaluate(el => {
+
+      let photosIDs: string[] = []
+
+      const photoThumbsDivs = el.querySelectorAll(".rsTmb.photo ")
+
+      for (const div of photoThumbsDivs) {
+         const style = div.getAttribute("style")
+
+         if (!style) {
+            console.log("photo thumbnail has not style attribute")
+            continue
          }
-         return photosIDs
-      })
+
+         const photoID = style.match(new RegExp(`/ven/(.*?).jpg`))
+
+         if (!photoID) {
+            console.log("photoID not found in style")
+            continue
+         }
+
+         photosIDs.push(photoID[1]!)
+      }
+
+      return photosIDs
+   })
+}
 
 
-   return photosIDs
+/* Utils */
+
+async function findRowID(viewIFrame: FrameLocator, dbRowID: string) {
+   if (dbRowID === "0") {
+      const row = await viewIFrame.locator(`#thegridbody > tr`).nth(0).getAttribute("id")
+      if (!row) {
+         throw Error("Could not find initialized row-id")
+      }
+      return row
+   }
+   return scrollUntilRowIDFound()
+
+
+   // helpers
+   async function scrollUntilRowIDFound(): Promise<string> {
+      // need to check dbRowID is the one returned by locator
+      try {
+         // eslint-disable-next-line no-var
+         var gotRowID = await viewIFrame.locator(`tr#${dbRowID}`).getAttribute("id", { timeout: 20 })
+         return assertGotRowIDIsCorrect(gotRowID)
+      }
+      catch (e) {
+         if (e instanceof Error && e.name === "TimeoutError") {
+            await scrollListDownAndWaitNewLoadedEstates(viewIFrame)
+            const gotRowID = await scrollUntilRowIDFound()
+            return assertGotRowIDIsCorrect(gotRowID)
+         }
+         throw e
+      }
+   }
+
+   function assertGotRowIDIsCorrect(gotRowID: string | null) {
+      if (gotRowID == null) {
+         throw Error(`Got null when finding rowID`)
+      }
+      if (gotRowID !== dbRowID) {
+         throw Error(`Got rowID from scraping is different from dbRowID; gotRowID: ${gotRowID}, dbRowID: ${dbRowID}}}`)
+      }
+      return gotRowID
+   }
+}
+
+function getNextSiblingRowID(row_id: string, viewIFrame: FrameLocator) {
+   return viewIFrame.locator(`#${row_id} + tr`).getAttribute("id")
 }
 
 /* returns true is spinner didn't appear, ie, all estates we scraped */
@@ -386,6 +454,7 @@ async function scrollListDownAndWaitNewLoadedEstates(viewIFrame: FrameLocator) {
       if (e instanceof Error && e.name === "TimeoutError") {
          return true
       }
+      throw e
    }
 
    await viewIFrame.locator(`#gridC`).evaluate(async letfListElem => {
@@ -414,4 +483,69 @@ async function isTrLastofList(row_id: string, viewIFrame: FrameLocator) {
       return (childrenArr.length - 1) === index ? true : false
 
    }, row_id)
+}
+
+async function cleanResources() {
+   console.log("Cleaning Resources")
+   await browserCtx.close()
+   await browser.close()
+   await db.terminate()
+}
+
+async function updateDB(schema: EstateSchema, batchEstateScraped: EstateScraped[], row_id: string, db: Firestore) {
+   let schemaChanged = false
+   for (const estateScraped of batchEstateScraped) {
+      schemaChanged = updateSchema(estateScraped, schema)
+   }
+
+   await execUpdateDB(schemaChanged ? schema : undefined)
+
+   // helpers
+   async function execUpdateDB(schema?: EstateSchema) {
+
+      const estatesColl = db.collection("estates")
+      const metaDoc = db.collection("meta").doc("meta")
+
+      const newMetaData = schema ? { schema, row_id } : { row_id }
+
+      const batch = db.batch()
+      for (const estateSraped of batchEstateScraped) {
+         batch.create(estatesColl.doc(estateSraped.flex_code), estateSraped)
+      }
+      batch.set(metaDoc, newMetaData)
+      await batch.commit()
+   }
+}
+
+/* Returns true if schema changed; false, otherwise */
+function updateSchema(estateScraped: EstateScraped, schema: EstateSchema): boolean {
+
+   let schemaChanged = false
+
+   for (const k in estateScraped) {
+      if (k === "photos" || k === "flex_code") {
+         continue
+      }
+      if (
+         k === "ubicacion" || k === "direccion" || k === "descripcion" ||
+         k === "info_general" || k === "detalles" || k === "info_interna"
+      ) {
+
+         const scraped = estateScraped[k]
+         const currSchemafieldNames = schema.map(x => x.field_name)
+
+         for (const [field_name, v] of scraped) {
+            if (!currSchemafieldNames.includes(field_name)) {
+               schemaChanged = true
+               schema.push({
+                  field_name,
+                  last_seen_val: v,
+                  og_section: k
+               })
+            }
+         }
+      }
+   }
+
+   return schemaChanged
 }
