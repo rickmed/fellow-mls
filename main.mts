@@ -457,20 +457,6 @@ async function scrollListDownAndWaitNewLoadedListings(viewIFrame: FrameLocator) 
 
    await viewIFrame.locator(`#morelistingsbot`).getByText("more listings ").isHidden()
 
-   // await viewIFrame.locator(`#gridC`).evaluate(async letfListElem => {
-
-   //    let resolve: (value: unknown) => void
-   //    const promise = new Promise(res => {
-   //       resolve = res
-   //    })
-
-   //    letfListElem.addEventListener("scroll", () => {
-   //       resolve(undefined)
-   //    }, { once: true })
-
-   //    await promise
-   // })
-
    return false
 }
 
