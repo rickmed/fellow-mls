@@ -13,7 +13,7 @@ const schemaData = await db.collection("meta").doc("schema").get()
 type DataItem = {db_column: string, last_seen_val: string, og_section: string}
 type Data = DataItem[]
 
-const data = schemaData.data().schema as Data
+const data = schemaData.data()!.schema as Data
 
 console.log()
 
