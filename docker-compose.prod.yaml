@@ -1,0 +1,6 @@
+version: "3"
+services:
+  image: fellowmls:latest
+  db:
+    image: pg_db_dev:0.1
+    container_name: db

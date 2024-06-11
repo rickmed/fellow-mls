@@ -1,6 +1,6 @@
 import { Firestore } from "@google-cloud/firestore"
 import pg from "pg"
-import { pg_config } from "../secrets/pg_config.js"
+import { pg_config } from "../infra/secrets/pg_config.js"
 
 const frStr = new Firestore({
    projectId: "lofty-foundry-424913-q8",

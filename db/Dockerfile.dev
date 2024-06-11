@@ -1,0 +1,5 @@
+FROM postgres:16.3-alpine3.20
+WORKDIR /usr/local/fellow-mls/
+COPY fellowmls_copy_db.out ./
+COPY ./restore_db.sh /docker-entrypoint-initdb.d/
+EXPOSE 5432
