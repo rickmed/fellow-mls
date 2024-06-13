@@ -1,0 +1,16 @@
+{
+   "compilerOptions": {
+      "strict": true,
+      "moduleResolution": "Node16",
+      "moduleDetection": "force",
+      "module": "Node16",
+      "target": "ESNext",
+      "checkJs": true,
+      "skipLibCheck": true,
+      "sourceMap": true,
+      "outDir": "./dist/",
+      "strictPropertyInitialization": true,
+      "noImplicitReturns": true,
+      "noUncheckedIndexedAccess": true,
+   },
+}

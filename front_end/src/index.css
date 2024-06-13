@@ -1,0 +1,13 @@
+:root {
+  font-family: Inter, Arial, sans-serif;
+}
+
+/* tailwind css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.logo-font {
+  font-family: 'Lucida Sans Unicode', 'Lucida Grande', 'Lucida Sans', Arial, sans-serif;
+  color: #40b8c3
+}
