@@ -11,10 +11,10 @@ services:
   app_server:
     container_name: fellow_app_server
     build:
-      context: ./app_server/
+      context: ./back_end/
       dockerfile: Dockerfile.dev
     ports:
-      - "3000:3000"
+      - "80:3000"
     command: "npx tsx --watch src/main.mts"
     volumes:
-      - ./app_server/src/:/usr/src/app/src/
+      - ./back_end/src/:/usr/src/app/src/

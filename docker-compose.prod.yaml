@@ -1,6 +1,20 @@
-version: "3"
 services:
-  image: fellowmls:latest
+
   db:
-    image: pg_db_dev:0.1
-    container_name: db
+    container_name: fellow_db
+    image: fellow_db
+    env_file:
+      - ./db/secrets/.env.dev
+    ports:
+      - "5432:5432"
+
+  app_server:
+    container_name: fellow_app_server
+    build:
+      context: ./app_server/
+      dockerfile: Dockerfile.dev
+    ports:
+      - "80:3000"
+    command: "npx tsx --watch src/main.mts"
+    volumes:
+      - ./app_server/src/:/usr/src/app/src/
