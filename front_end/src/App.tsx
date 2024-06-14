@@ -1,17 +1,19 @@
 import { Header } from "./components/Header"
+import { Filters } from "./components/Filters"
 
 function App() {
+
+  const sepStyle = {
+    borderBottom: "1px solid",
+    transform: "scaleY(0.5)",
+    borderColor: "#737373",
+  }
+
   return (
     <section className="antialiased text-gray-900">
       <Header/>
-      <div>
-        <button className="border-gray-300 border-4">Apartamento | Casa | Oficina</button>
-        <button>Venta | Alquiler</button>
-        <button>Precio: Min | Max</button>
-        <button>Habitaciones: Min | Max</button>
-        <button>Baños: Min | Max</button>
-        <button>Metros: Minx| Max</button>
-      </div>
+      <div aria-label="separator" style={sepStyle} className="mt-3"></div>
+      <Filters/>
     </section>
   )
 }

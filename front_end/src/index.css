@@ -1,5 +1,6 @@
 :root {
-  font-family: Inter, Arial, sans-serif;
+  /* font-family: Inter, Arial, sans-serif; */
+  font-family: Arial, sans-serif;
 }
 
 /* tailwind css */
@@ -9,5 +10,5 @@
 
 .logo-font {
   font-family: 'Lucida Sans Unicode', 'Lucida Grande', 'Lucida Sans', Arial, sans-serif;
-  color: #40b8c3
+  color: #027391;
 }
