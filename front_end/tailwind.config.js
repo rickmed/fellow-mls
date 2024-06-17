@@ -7,7 +7,11 @@ export default {
   theme: {
     extend: {
       colors: {
-        'dark-blue': '#027391'
+        "dark-blue": "#027391",
+        "med-blue": "#007e97",
+      },
+      fontSize: {
+        mid: ['0.925rem', '1.325rem'],
       }
     },
   },
